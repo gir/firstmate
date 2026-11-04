@@ -52,6 +52,14 @@ export function eventSessionID(event) {
     "";
 }
 
+// The session's working directory when the event carries one, as session
+// lifecycle events do on their session info.
+export function eventDirectory(event) {
+  const properties = eventProperties(event);
+  const directory = properties.info?.directory ?? properties.session?.directory ?? properties.directory;
+  return typeof directory === "string" ? directory : "";
+}
+
 function sessionIdentity(properties) {
   const source = properties.info ?? properties.session ?? properties;
   const id = source.id ?? properties.sessionID ?? properties.sessionId ?? "";

@@ -2,7 +2,14 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
-import { contextDirectory, createTurnEndLatch, promptSession, setupEventSubscription } from "./lib/fm-opencode2.js";
+import {
+  contextDirectory,
+  createTurnEndLatch,
+  eventDirectory,
+  eventSessionID,
+  promptSession,
+  setupEventSubscription,
+} from "./lib/fm-opencode2.js";
 
 // Supervision host: a home opted in with config/supervision-host
 // (docs/configuration.md "Supervision host" owns the gate, which
@@ -122,6 +129,34 @@ async function isPrimaryRoot(root, home) {
     root,
   ]);
   return result.code === 0;
+}
+
+// The plugin can be loaded from any copy of this repository the server sees,
+// such as a worker's linked worktree, so its own project directory is only one
+// candidate. The session's directory and the server's working directory are
+// tried first; the first candidate that is a primary root wins. When none is,
+// the anchor-derived paths are returned and beginArm reports the refusal.
+async function primaryPaths(anchors) {
+  let fallback = null;
+  const tried = new Set();
+  for (const anchor of anchors) {
+    if (!anchor) continue;
+    const paths = effectivePaths(await resolveRoot(anchor));
+    fallback ??= paths;
+    if (tried.has(paths.root)) continue;
+    tried.add(paths.root);
+    if (await isPrimaryRoot(paths.root, paths.home)) return paths;
+  }
+  return fallback ?? effectivePaths("");
+}
+
+const reportedNotPrimary = new Set();
+
+function reportNotPrimary(paths) {
+  const key = `${paths.root}\0${paths.home}`;
+  if (reportedNotPrimary.has(key)) return;
+  reportedNotPrimary.add(key);
+  console.error(`fm-primary-watch-arm: not-primary, not arming: root=${paths.root || "(none)"} home=${paths.home || "(none)"}`);
 }
 
 // bin/fm-supervision-lib.sh's fm_supervision_needed is the single owner of the
@@ -531,7 +566,10 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
 
 async function beginArm(paths, sessionID, client, predecessorArmPid) {
   if (!sessionID) return { status: "skipped", armChild: null };
-  if (!(await isPrimaryRoot(paths.root, paths.home))) return { status: "not-primary", armChild: null };
+  if (!(await isPrimaryRoot(paths.root, paths.home))) {
+    reportNotPrimary(paths);
+    return { status: "not-primary", armChild: null };
+  }
   if (!(await sessionOwnsLock(paths))) return { status: "read-only", armChild: null };
   if (child) return { status: "existing", armChild: child };
   if (retryTimer) return { status: "retrying", armChild: null };
@@ -564,8 +602,7 @@ async function ensureArm(paths, sessionID, client, predecessorArmPid = "", inclu
 }
 
 export const FmPrimaryWatchArm = async ({ client, directory, worktree }) => {
-  const root = worktree ? resolvePath(worktree) : await resolveRoot(directory);
-  const paths = effectivePaths(root);
+  const paths = await primaryPaths([worktree, directory, process.cwd()]);
   globalThis[COORDINATOR_KEY] = {
     ensureArmed: (sessionID, activeClient) => ensureArm(paths, sessionID, activeClient ?? client),
   };
@@ -583,17 +620,27 @@ export const FmPrimaryWatchArm = async ({ client, directory, worktree }) => {
 function installWatchArm(ctx) {
   const anchor = contextDirectory(ctx);
   const transport = { __ctx: ctx };
-  let pathsPromise = null;
-  const getPaths = () => (pathsPromise ??= resolveRoot(anchor).then(effectivePaths));
+  const sessionDirectories = new Map();
+  const pathsByDirectory = new Map();
+  const getPaths = (sessionID) => {
+    const directory = sessionDirectories.get(sessionID) ?? "";
+    if (!pathsByDirectory.has(directory)) {
+      pathsByDirectory.set(directory, primaryPaths([directory, anchor, process.cwd()]));
+    }
+    return pathsByDirectory.get(directory);
+  };
   globalThis[COORDINATOR_KEY] = {
-    ensureArmed: async (sessionID, activeClient) => ensureArm(await getPaths(), sessionID, activeClient ?? transport),
+    ensureArmed: async (sessionID, activeClient) => ensureArm(await getPaths(sessionID), sessionID, activeClient ?? transport),
   };
 
   const latch = createTurnEndLatch();
   setupEventSubscription(ctx, async (event) => {
+    const directory = eventDirectory(event);
+    const eventSession = eventSessionID(event);
+    if (directory && eventSession) sessionDirectories.set(eventSession, directory);
     const sessionID = latch(event);
     if (!sessionID) return;
-    void ensureArm(await getPaths(), sessionID, transport);
+    void ensureArm(await getPaths(sessionID), sessionID, transport);
   });
 }
 

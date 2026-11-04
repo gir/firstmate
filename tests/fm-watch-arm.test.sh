@@ -2006,6 +2006,51 @@ test_opencode_arm_plugin_arms_a_linked_secondmate_home() {
   pass "watch-arm: the OpenCode arm plugin arms a marked linked secondmate home and refuses a task worktree"
 }
 
+# A plugin copy loaded from a linked task worktree must still arm the primary
+# home its session runs in, and a refusal names the root it decided on.
+test_opencode_arm_plugin_resolves_the_session_primary_root() {
+  command -v node >/dev/null 2>&1 || { printf 'skip: node not found\n'; return 0; }
+  local driver dir linked out err i
+  driver="$TMP_ROOT/arm-root-driver.mjs"
+  cat > "$driver" <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async () => {} } };
+await mod.FmPrimaryWatchArm({ client, directory: process.env.SESSION_DIR, worktree: process.env.PLUGIN_WORKTREE });
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const status = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+process.stdout.write(`${status}\n`);
+process.exit(0);
+EOF
+  dir=$(make_arm_decision_fixture "opencode-arm-session-root")
+  git -C "$dir/repo" add -A >/dev/null
+  git -C "$dir/repo" -c user.name=t -c user.email=t@t commit -qm init
+  linked="$dir/linked"
+  git -C "$dir/repo" worktree add -q --detach "$linked"
+  : > "$dir/home/state/fixture.meta"
+
+  out=$(cd "$dir" && unset FM_ROOT_OVERRIDE && PLUGIN_WORKTREE="$linked" SESSION_DIR="$dir/repo" FM_HOME="$dir/home" \
+    FM_ARM_LOG="$dir/arm.log" NODE_NO_WARNINGS=1 \
+    PLUGIN="$ROOT/.opencode/plugins/fm-primary-watch-arm.js" node "$driver" 2>/dev/null | tail -n 1)
+  [ "$out" != not-primary ] || fail "a plugin copy from a linked worktree refused its primary session's home"
+  i=0
+  while [ "$i" -lt 250 ] && [ ! -e "$dir/arm.log" ]; do sleep 0.02; i=$((i + 1)); done
+  [ -e "$dir/arm.log" ] || fail "a plugin copy from a linked worktree never armed the primary home (status $out)"
+
+  rm -f "$dir/arm.log"
+  err=$(cd "$dir" && unset FM_ROOT_OVERRIDE && PLUGIN_WORKTREE="$linked" SESSION_DIR="$linked" FM_HOME="$dir/home" \
+    FM_ARM_LOG="$dir/arm.log" NODE_NO_WARNINGS=1 \
+    PLUGIN="$ROOT/.opencode/plugins/fm-primary-watch-arm.js" node "$driver" 2>&1 >/dev/null)
+  [ ! -e "$dir/arm.log" ] || fail "a session in a task worktree armed"
+  case "$err" in
+    *not-primary*"root="*/linked" "*) ;;
+    *) fail "a not-primary refusal must name the root it used: $err" ;;
+  esac
+  pass "watch-arm: the OpenCode arm plugin arms its session's primary root and names the root it refuses"
+}
+
 test_append_wakes_handling_successor after-ack
 test_append_wakes_handling_successor before-ack
 test_append_wakes_handling_successor after-ack missing
@@ -2048,3 +2093,4 @@ test_take_over_preserves_downtime_from_watcher_self_exit
 test_take_over_confirms_a_watcher_stopped_inside_its_event_wait
 test_opencode_arm_plugin_decides_with_the_shared_predicate
 test_opencode_arm_plugin_arms_a_linked_secondmate_home
+test_opencode_arm_plugin_resolves_the_session_primary_root
