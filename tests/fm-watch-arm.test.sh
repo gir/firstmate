@@ -1844,6 +1844,7 @@ make_arm_decision_fixture() {  # <name>
   git init -q -b main "$repo"
   : > "$repo/AGENTS.md"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$repo/bin/fm-supervision-lib.sh"
+  cp "$ROOT/bin/fm-primary-scope-lib.sh" "$repo/bin/fm-primary-scope-lib.sh"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'arm\n' >> "${FM_ARM_LOG:?}"
@@ -1957,6 +1958,54 @@ EOF
   pass "watch-arm: the OpenCode arm plugin decides with the shared supervision predicate"
 }
 
+# The plugin's primary-root check is bin/fm-primary-scope-lib.sh's
+# fm_primary_root_matches: a linked worktree carrying a valid secondmate-home
+# marker is a secondmate home and arms, while a markerless linked worktree (a
+# task worktree) is never primary.
+write_arm_status_driver() {  # <driver>
+  cat > "$1" <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async () => {} } };
+await mod.FmPrimaryWatchArm({ client, directory: process.env.WORKTREE, worktree: process.env.WORKTREE });
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const status = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+process.stdout.write(`${status}\n`);
+process.exit(0);
+EOF
+}
+
+test_opencode_arm_plugin_arms_a_linked_secondmate_home() {
+  command -v node >/dev/null 2>&1 || { printf 'skip: node not found\n'; return 0; }
+  local driver dir linked out case_name i
+  driver="$TMP_ROOT/arm-status-driver.mjs"
+  write_arm_status_driver "$driver"
+  for case_name in marker no-marker; do
+    dir=$(make_arm_decision_fixture "opencode-arm-linked-$case_name")
+    git -C "$dir/repo" add -A >/dev/null
+    git -C "$dir/repo" -c user.name=t -c user.email=t@t commit -qm init
+    linked="$dir/linked"
+    git -C "$dir/repo" worktree add -q --detach "$linked"
+    [ "$case_name" = marker ] && printf 'mate-1\n' > "$linked/.fm-secondmate-home"
+    : > "$dir/home/state/fixture.meta"
+    out=$(FM_ROOT_OVERRIDE="$linked" WORKTREE="$linked" FM_HOME="$dir/home" \
+      FM_ARM_LOG="$dir/arm.log" NODE_NO_WARNINGS=1 \
+      PLUGIN="$ROOT/.opencode/plugins/fm-primary-watch-arm.js" node "$driver" 2>/dev/null | tail -n 1)
+    if [ "$case_name" = marker ]; then
+      [ "$out" != not-primary ] || fail "a marked linked secondmate home must not be refused as not-primary"
+      i=0
+      while [ "$i" -lt 250 ] && [ ! -e "$dir/arm.log" ]; do sleep 0.02; i=$((i + 1)); done
+      [ -e "$dir/arm.log" ] || fail "a marked linked secondmate home never armed (status $out)"
+    else
+      [ "$out" = not-primary ] || fail "a markerless linked worktree must stay not-primary, got $out"
+      [ ! -e "$dir/arm.log" ] || fail "a markerless linked worktree armed"
+    fi
+  done
+  pass "watch-arm: the OpenCode arm plugin arms a marked linked secondmate home and refuses a task worktree"
+}
+
 test_append_wakes_handling_successor after-ack
 test_append_wakes_handling_successor before-ack
 test_append_wakes_handling_successor after-ack missing
@@ -1998,3 +2047,4 @@ test_take_over_owns_a_fresh_cycle_and_keeps_queued_work_surfacing
 test_take_over_preserves_downtime_from_watcher_self_exit
 test_take_over_confirms_a_watcher_stopped_inside_its_event_wait
 test_opencode_arm_plugin_decides_with_the_shared_predicate
+test_opencode_arm_plugin_arms_a_linked_secondmate_home

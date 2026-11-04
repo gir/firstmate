@@ -107,15 +107,21 @@ function effectivePaths(root) {
   return { root: fmRoot, home: fmHome, state, config };
 }
 
+// LOCAL PATCH (not upstream): defer to the shared predicate in
+// bin/fm-primary-scope-lib.sh so a seeded secondmate home (valid
+// .fm-secondmate-home marker) is in scope, matching the turn-end guard and the
+// docs. The old inline check refused every secondmate home. Reconcile on every
+// firstmate update.
 async function isPrimaryRoot(root, home) {
   if (!root) return false;
-  if (!existsSync(`${root}/AGENTS.md`) || !existsSync(`${root}/bin`)) return false;
-  if (existsSync(`${root}/.fm-secondmate-home`)) return false;
-  if (home && home !== root && existsSync(`${home}/.fm-secondmate-home`)) return false;
-  const gitDir = await runProcess("git", ["-C", root, "rev-parse", "--git-dir"]);
-  const commonDir = await runProcess("git", ["-C", root, "rev-parse", "--git-common-dir"]);
-  if (gitDir.code !== 0 || commonDir.code !== 0) return false;
-  return gitDir.stdout.trim() === commonDir.stdout.trim();
+  const result = await runProcess("bash", [
+    "-c",
+    '. "$1/bin/fm-primary-scope-lib.sh" && fm_primary_root_matches "$2"',
+    "fm-scope",
+    root,
+    root,
+  ]);
+  return result.code === 0;
 }
 
 // bin/fm-supervision-lib.sh's fm_supervision_needed is the single owner of the
