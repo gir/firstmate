@@ -2051,6 +2051,65 @@ EOF
   pass "watch-arm: the OpenCode arm plugin arms its session's primary root and names the root it refuses"
 }
 
+# A hot reload loads a fresh plugin instance into the same server: it must
+# dispose the previous instance's event subscription and attach to the live
+# watcher cycle rather than restart it, so two instances never stop each
+# other's watcher.
+test_opencode_arm_plugin_hot_reload_disposes_and_attaches() {
+  command -v node >/dev/null 2>&1 || { printf 'skip: node not found\n'; return 0; }
+  local driver dir out
+  driver="$TMP_ROOT/arm-reload-driver.mjs"
+  cat > "$driver" <<'EOF'
+import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const url = pathToFileURL(process.env.PLUGIN).href;
+const signals = [];
+const ctx = {
+  location: { project: { directory: process.env.WORKTREE } },
+  event: {
+    subscribe: async ({ signal }) => {
+      signals.push(signal);
+      return (async function* () {
+        await new Promise((resolve) => signal.addEventListener("abort", resolve));
+      })();
+    },
+  },
+};
+const client = { session: { promptAsync: async () => {} } };
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const results = [];
+for (const generation of ["first", "second"]) {
+  const mod = await import(`${url}?generation=${generation}`);
+  mod.default.setup(ctx);
+  await mod.FmPrimaryWatchArm({ client, directory: process.env.WORKTREE, worktree: process.env.WORKTREE });
+  results.push(await globalThis.__firstmateOpenCodeWatchArm.ensureArmed(`session-${generation}`, client));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+}
+const aborted = signals.map((signal) => (signal.aborted ? "aborted" : "live")).join(",");
+process.stdout.write(`${results.join(",")} ${aborted}\n`);
+process.stdout.write(readFileSync(process.env.FM_ARM_LOG, "utf8"));
+process.exit(0);
+EOF
+  dir=$(make_arm_decision_fixture "opencode-arm-hot-reload")
+  cat > "$dir/repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm args=[%s]\n' "$*" >> "${FM_ARM_LOG:?}"
+printf 'watcher: healthy pid=1 (beacon 0s)\n'
+SH
+  : > "$dir/home/state/fixture.meta"
+  out=$(unset FM_ROOT_OVERRIDE && WORKTREE="$dir/repo" FM_HOME="$dir/home" \
+    FM_ARM_LOG="$dir/arm.log" NODE_NO_WARNINGS=1 \
+    PLUGIN="$ROOT/.opencode/plugins/fm-primary-watch-arm.js" node "$driver" 2>/dev/null)
+  case "$out" in
+    *" aborted,live"*) ;;
+    *) fail "a hot reload must dispose only the previous instance's subscription: $out" ;;
+  esac
+  [ "$(printf '%s\n' "$out" | grep -c '^arm args=\[--restart\]$')" = 1 ] || fail "only the first launch may restart a leftover watcher: $out"
+  printf '%s\n' "$out" | grep -q '^arm args=\[\]$' || fail "a reloaded instance must attach instead of restarting: $out"
+  pass "watch-arm: a hot-reloaded OpenCode arm plugin disposes its predecessor's subscription and attaches"
+}
+
 test_append_wakes_handling_successor after-ack
 test_append_wakes_handling_successor before-ack
 test_append_wakes_handling_successor after-ack missing
@@ -2094,3 +2153,4 @@ test_take_over_confirms_a_watcher_stopped_inside_its_event_wait
 test_opencode_arm_plugin_decides_with_the_shared_predicate
 test_opencode_arm_plugin_arms_a_linked_secondmate_home
 test_opencode_arm_plugin_resolves_the_session_primary_root
+test_opencode_arm_plugin_hot_reload_disposes_and_attaches

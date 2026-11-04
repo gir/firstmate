@@ -8,7 +8,7 @@ import {
   eventDirectory,
   eventSessionID,
   promptSession,
-  setupEventSubscription,
+  replaceEventSubscription,
 } from "./lib/fm-opencode2.js";
 
 // Supervision host: a home opted in with config/supervision-host
@@ -23,6 +23,10 @@ import {
 // as they do for the arm, with a longer readiness budget for the host's own
 // startup. On a home that does not run the host nothing below changes.
 const COORDINATOR_KEY = "__firstmateOpenCodeWatchArm";
+const SUBSCRIPTION_KEY = "__firstmateOpenCodeWatchArmSubscription";
+// Process-global so a hot-reloaded instance knows a sibling instance already
+// launched in this server and must attach to its cycle rather than restart it.
+const LAUNCHED_KEY = "__firstmateOpenCodeWatchArmLaunched";
 // 35s on Windows so the budget stays above arm's MSYS confirm default (30s in
 // bin/fm-watch-arm.sh): a slow but successful Git Bash cold start must not be
 // SIGTERMed mid-confirmation. Conditioned on win32 so other platforms keep 12s.
@@ -461,7 +465,12 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
     FM_WATCH_PREDECESSOR_ARM_PID: predecessorArmPid,
   };
   if (hostMode) env.FM_SUPERVISION_HOST_PRIMARY = "opencode";
-  const command = hostMode ? '"$FM_ROOT_OVERRIDE/bin/fm-supervision-host.sh" park --restart' : '"$FM_ROOT_OVERRIDE/bin/fm-watch-arm.sh" --restart';
+  // Only this server's first launch restarts a leftover watcher; every later
+  // launch, including one from a hot-reloaded instance, attaches to the live
+  // cycle so two instances can never stop each other's watcher.
+  const restart = globalThis[LAUNCHED_KEY] ? "" : " --restart";
+  globalThis[LAUNCHED_KEY] = true;
+  const command = hostMode ? `"$FM_ROOT_OVERRIDE/bin/fm-supervision-host.sh" park${restart}` : `"$FM_ROOT_OVERRIDE/bin/fm-watch-arm.sh"${restart}`;
   const armChild = spawn("bash", ["-lc", `config_dir="\${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"; [ -f "$config_dir/x-mode.env" ] && . "$config_dir/x-mode.env"; exec ${command}`], {
     cwd: paths.root,
     env,
@@ -634,7 +643,7 @@ function installWatchArm(ctx) {
   };
 
   const latch = createTurnEndLatch();
-  setupEventSubscription(ctx, async (event) => {
+  replaceEventSubscription(SUBSCRIPTION_KEY, ctx, async (event) => {
     const directory = eventDirectory(event);
     const eventSession = eventSessionID(event);
     if (directory && eventSession) sessionDirectories.set(eventSession, directory);

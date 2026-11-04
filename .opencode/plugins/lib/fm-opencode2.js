@@ -2,6 +2,8 @@
 // OpenCode 2 calls setup(ctx), exposes event streams through ctx.event.subscribe,
 // and exposes blocking tool hooks through ctx.tool.hook("execute.before", fn).
 
+// Returns a dispose function (truthy) that aborts the subscription, or false
+// when the context has no event stream.
 export function setupEventSubscription(ctx, handler) {
   if (!ctx?.event?.subscribe) return false;
   const controller = new AbortController();
@@ -12,12 +14,30 @@ export function setupEventSubscription(ctx, handler) {
         onActivity() {},
       });
       for await (const event of stream) {
+        if (controller.signal.aborted) break;
         await handler(event);
       }
     } catch {
     }
   })();
-  return true;
+  return () => controller.abort();
+}
+
+// A hot reload installs a fresh plugin instance in the same server process
+// without disposing the old one. Keyed by a process-global slot, this aborts
+// the previous instance's subscription before subscribing again, so only the
+// newest instance keeps reacting to events.
+export function replaceEventSubscription(key, ctx, handler) {
+  const previous = globalThis[key];
+  if (typeof previous === "function") {
+    try {
+      previous();
+    } catch {
+    }
+  }
+  const dispose = setupEventSubscription(ctx, handler);
+  globalThis[key] = dispose || null;
+  return dispose;
 }
 
 export function setupToolExecuteBefore(ctx, handler) {
