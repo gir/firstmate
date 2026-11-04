@@ -2110,6 +2110,34 @@ SH
   pass "watch-arm: a hot-reloaded OpenCode arm plugin disposes its predecessor's subscription and attaches"
 }
 
+# A hand-run arm from an agent tool call must survive the call's process group
+# being killed when the call ends or times out.
+test_detached_arm_survives_its_callers_process_group() {
+  command -v perl >/dev/null 2>&1 || { printf 'skip: perl not found\n'; return 0; }
+  local dir state out wpid i caller
+  dir=$(make_case detached-arm)
+  state="$dir/state"
+  out="$dir/arm.out"
+  mkdir -p "$state"
+  perl -e 'setpgrp(0, 0); exec @ARGV' -- env FM_HOME="$dir" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    FM_ARM_CONFIRM_TIMEOUT="$REARM_CONFIRM_SECONDS" \
+    "$WATCH_ARM" --detach --restart > "$out" 2>&1 &
+  caller=$!
+  wait_for_exit "$caller" 60
+  kill -TERM -- "-$caller" 2>/dev/null || true
+  grep -q '^watcher: started pid=.*(detached; log ' "$out" || fail "detached arm did not report its start: $(cat "$out")"
+  wpid=$(sed -n 's/^watcher: started pid=\([0-9]*\).*/\1/p' "$out")
+  # The caller's group is gone; the watcher must not have been in it.
+  sleep 0.5
+  kill -0 "$wpid" 2>/dev/null || fail "watcher died with its caller"
+  [ "$(ps -o pgid= -p "$wpid" | tr -d ' ')" != "$(ps -o pgid= -p $$ | tr -d ' ')" ] || fail "watcher shares the test's process group"
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$WATCH_ARM" --stop >/dev/null 2>&1 || true
+  i=0
+  while [ "$i" -lt 100 ] && kill -0 "$wpid" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
+  pass "watch-arm: --detach keeps the hand-run arm's watcher alive past its caller"
+}
+
 test_append_wakes_handling_successor after-ack
 test_append_wakes_handling_successor before-ack
 test_append_wakes_handling_successor after-ack missing
@@ -2154,3 +2182,4 @@ test_opencode_arm_plugin_decides_with_the_shared_predicate
 test_opencode_arm_plugin_arms_a_linked_secondmate_home
 test_opencode_arm_plugin_resolves_the_session_primary_root
 test_opencode_arm_plugin_hot_reload_disposes_and_attaches
+test_detached_arm_survives_its_callers_process_group

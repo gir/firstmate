@@ -124,6 +124,16 @@
 # state from a checkout that is about to be deleted. A marked stock-layout lab
 # home is disposable and permitted; ordinary tests use the sandbox bypass
 # exported by tests/lib.sh.
+#
+# --detach (leading, combinable with --restart or the plain arm): for a hand
+# run from an agent's shell tool call, which kills its process group when the
+# call ends or times out and so would take the arm and its watcher with it.
+# The arm re-runs itself in a new session (perl POSIX::setsid; macOS has no
+# setsid(1)) with its output in state/.watch-arm-detached.log, and this call
+# prints the arm's first status line and returns while the detached arm keeps
+# owning the cycle. Nothing reaches the caller when that cycle closes, so it is
+# a recovery probe, not a supervision cycle. Plugin- and hook-owned arms never
+# pass it and are unchanged.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -584,6 +594,28 @@ handling_successor_generation() {
   esac
 }
 
+if [ "${1:-}" = --detach ]; then
+  shift
+  case "${1:-}" in ''|--restart) ;; *) echo "watcher: --detach only combines with --restart" >&2; exit 2 ;; esac
+  detach_log="$STATE/.watch-arm-detached.log"
+  : > "$detach_log" || { echo "watcher: FAILED - cannot write $detach_log"; exit 1; }
+  perl -MPOSIX=setsid -e 'setsid(); exec @ARGV or die "exec: $!\n"' -- \
+    "$ARM_SCRIPT" "$@" < /dev/null > "$detach_log" 2>&1 &
+  detach_deadline=$(( $(date +%s) + CONFIRM_TIMEOUT + 5 ))
+  while :; do
+    detach_line=$(grep -m 1 '^watcher: ' "$detach_log" 2>/dev/null || true)
+    if [ -n "$detach_line" ]; then
+      printf '%s (detached; log %s)\n' "$detach_line" "$detach_log"
+      case "$detach_line" in *FAILED*) exit 1 ;; esac
+      exit 0
+    fi
+    [ "$(date +%s)" -lt "$detach_deadline" ] || break
+    sleep 0.2
+  done
+  echo "watcher: FAILED - detached arm printed no status line (log $detach_log)"
+  exit 1
+fi
+
 mode=arm
 handling_generation=
 handling_watcher_pid=
@@ -607,7 +639,7 @@ case "${1:-}" in
     case "$handling_watcher_pid" in ''|*[!0-9]*) echo "watcher: invalid successor watcher pid" >&2; exit 2 ;; esac
     [ "$#" -eq 4 ] || { echo "watcher: unexpected handling delivery arguments" >&2; exit 2; }
     ;;
-  *) echo "usage: $(basename "$0") [--restart | --stop | --take-over ARM_PID | --handling-delivered GENERATION --watcher-pid PID]" >&2; exit 2 ;;
+  *) echo "usage: $(basename "$0") [--detach] [--restart | --stop | --take-over ARM_PID | --handling-delivered GENERATION --watcher-pid PID]" >&2; exit 2 ;;
 esac
 
 if [ "$mode" = handling-delivered ]; then
