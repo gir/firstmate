@@ -45,9 +45,13 @@ case "$cmd" in
     cat "$D/$last.json"
     ;;
   rm) [ -e "$D/rm-sticks" ] || rm -f "$D/$last.json"; printf '{}\n' ;;
-  read) printf 'screen of %s\n' "$last" ;;
+  read)
+    if [ -f "$D/read.txt" ]; then cat "$D/read.txt"; else printf 'screen of %s\n' "$last"; fi
+    ;;
   send)
-    if [ -f "$D/send.exit" ]; then
+    forced=0
+    for a in "$@"; do [ "$a" = --force ] && forced=1; done
+    if [ -f "$D/send.exit" ] && ! { [ "$forced" = 1 ] && [ -f "$D/send.force-ok" ]; }; then
       printf '{"error":{"kind":"%s"}}\n' "$(cat "$D/send.kind" 2>/dev/null || echo blocked)" >&2
       exit "$(cat "$D/send.exit")"
     fi
@@ -293,6 +297,37 @@ test_container_ensure_gates_binary_version_and_generation() {
   pass "hc: container_ensure refuses a misnamed, old, or wrong-generation binary"
 }
 
+test_send_text_submit_forces_only_own_osc_block() {
+  local tag out log st
+  setup_case force
+  tag=$(hometag_of)
+  write_terminal "$D" t1 live fm-a1 "$tag" zsh /bin/zsh
+  mkdir -p "$HOMEDIR/state"
+  st="$HOMEDIR/state/a1.status"
+  printf '9\n' > "$D/send.exit"
+  printf 'blocked\n' > "$D/send.kind"
+  : > "$D/send.force-ok"
+  printf 'working [at=1]: busy\n' > "$st"
+  out=$(hc_shell 'fm_backend_hc_send_text_submit fmtest:t1 "deploy now" 3 0.4 0 fm-a1' 2>&1)
+  assert_contains "$out" unknown "a block with no open keyed blocked record is never forced"
+  ! grep -q $'\x1f--force' "$D/log" || fail "send --force must not run without an open keyed blocked record"
+  printf 'blocked [key=fm-held] [at=2]: waiting on firstmate\n' >> "$st"
+  printf 'Do you want to proceed?\n 1. Yes\n 2. No\n' > "$D/read.txt"
+  out=$(hc_shell 'fm_backend_hc_send_text_submit fmtest:t1 "deploy now" 3 0.4 0 fm-a1' 2>&1)
+  assert_contains "$out" unknown "a real permission prompt on screen is never forced"
+  ! grep -q $'\x1f--force' "$D/log" || fail "send --force must not run over a permission prompt"
+  rm -f "$D/read.txt"
+  out=$(hc_shell 'fm_backend_hc_send_text_submit fmtest:t1 "deploy now" 3 0.4 0 fm-a1' 2>/dev/null)
+  assert_equals "$out" empty "firstmate's own keyed blocked report is retried with --force"
+  grep -q $'\x1f--force' "$D/log" || fail "the retry must pass --force"
+  printf 'resolved [key=fm-held] [at=3]: answered\n' >> "$st"
+  : > "$D/log"
+  out=$(hc_shell 'fm_backend_hc_send_text_submit fmtest:t1 "deploy now" 3 0.4 0 fm-a1' 2>&1)
+  assert_contains "$out" unknown "a resolved record no longer allows forcing"
+  ! grep -q $'\x1f--force' "$D/log" || fail "send --force must not run after the record resolves"
+  pass "hc: send_text_submit forces only a block caused by firstmate's own keyed report"
+}
+
 test_send_text_submit_confirms_through_send_wait() {
   local tag out log
   setup_case submit
@@ -376,4 +411,5 @@ fm_test_run \
   test_endpoint_validation_binds_hc_meta \
   test_container_ensure_gates_binary_version_and_generation \
   test_send_text_submit_confirms_through_send_wait \
+  test_send_text_submit_forces_only_own_osc_block \
   test_send_delimiters_and_binary_socket_pins
