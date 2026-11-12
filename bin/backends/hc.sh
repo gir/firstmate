@@ -358,6 +358,23 @@ fm_backend_hc_composer_state() {  # <target> [expected-label] -> empty|pending|p
   printf '%s' "$verdict"
 }
 
+# fm_backend_hc_block_is_own_report: 0 only when the terminal's blocked state
+# was reported by firstmate itself - the task's status file holds an open keyed
+# blocked or needs-decision record - and the visible screen shows no permission
+# prompt. An unreadable screen or status counts as not own, so the caller
+# never forces on doubt. FM_HC_PROMPT_RE overrides the prompt pattern.
+fm_backend_hc_block_is_own_report() {  # <target> <expected-label>
+  local target=$1 label=${2:-} id sf state_dir rows cap
+  case "$label" in fm-?*) id=${label#fm-} ;; *) return 1 ;; esac
+  state_dir=${FM_STATE_OVERRIDE:-${FM_HOME:-}/state}
+  sf="$state_dir/$id.status"
+  [ -f "$sf" ] || return 1
+  rows=$(bash -c '. "$1/fm-classify-lib.sh" && status_open_decisions "$2"' _ "$FM_BACKEND_LIB_DIR" "$sf" 2>/dev/null) || return 1
+  printf '%s\n' "$rows" | awk -F'\t' '$1 != "" && $1 != "default" && ($2 == "blocked" || $2 == "needs-decision") { f = 1 } END { exit !f }' || return 1
+  cap=$(fm_backend_hc_visible_capture "$target" "$label") || return 1
+  ! printf '%s' "$cap" | grep -qiE "${FM_HC_PROMPT_RE:-do you want to|allow .*\?|\(y/n\)|\[y/n\]|yes, and don.t ask again|permission|approve|esc to cancel}"
+}
+
 # fm_backend_hc_send_text_submit: one `hc send --wait`, which pastes, presses
 # Enter, and reports the turn it started. Echoes
 # empty|pending|pending-unproven|unknown|send-failed, a subset of the
@@ -368,9 +385,13 @@ fm_backend_hc_composer_state() {  # <target> [expected-label] -> empty|pending|p
 # started:null once the bounded wait times out; the send still typed and
 # entered, so the verdict falls back to the composer screen, and only a
 # proven pending composer gets Enter retries through the shared loop. A
-# blocked terminal refuses with exit 9 before typing - unknown, with a
-# diagnostic and no retries, never forced. The other structured refusals
-# (3 not_found, 11 finished) and any other failure are send-failed.
+# blocked terminal refuses with exit 9 before typing. When the block is
+# firstmate's own OSC 7501 report (an open keyed blocked or needs-decision in
+# the task's status file) and no permission prompt is on screen, the send is
+# retried once with --force; any other block - a real prompt, or no open keyed
+# record - is unknown with a diagnostic and no retries, never forced. The
+# other structured refusals (3 not_found, 11 finished) and any other failure
+# are send-failed.
 fm_backend_hc_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label]
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 expected=${6:-}
   local wait_secs out rc started wait_status verdict
@@ -386,9 +407,16 @@ fm_backend_hc_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <s
   case "$rc" in
     0) ;;
     9)
-      echo "error: hc send refused $target - the terminal is blocked waiting on input (never forced): $out" >&2
-      printf 'unknown'
-      return 0
+      if fm_backend_hc_block_is_own_report "$target" "$expected"; then
+        out=$(fm_backend_hc_cli "$FM_BACKEND_HC_SESSION" send --json "$FM_BACKEND_HC_ADDRESS" \
+          --wait --force --timeout "$wait_secs" -- "$text" 2>&1)
+        rc=$?
+        [ "$rc" -eq 0 ] || { printf 'send-failed'; return 0; }
+      else
+        echo "error: hc send refused $target - the terminal is blocked waiting on input (never forced): $out" >&2
+        printf 'unknown'
+        return 0
+      fi
       ;;
     *) printf 'send-failed'; return 0 ;;
   esac
