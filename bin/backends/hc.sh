@@ -372,7 +372,7 @@ fm_backend_hc_block_is_own_report() {  # <target> <expected-label>
   rows=$(bash -c '. "$1/fm-classify-lib.sh" && status_open_decisions "$2"' _ "$FM_BACKEND_LIB_DIR" "$sf" 2>/dev/null) || return 1
   printf '%s\n' "$rows" | awk -F'\t' '$1 != "" && $1 != "default" && ($2 == "blocked" || $2 == "needs-decision") { f = 1 } END { exit !f }' || return 1
   cap=$(fm_backend_hc_visible_capture "$target" "$label") || return 1
-  ! printf '%s' "$cap" | grep -qiE "${FM_HC_PROMPT_RE:-do you want to|allow .*\?|\(y/n\)|\[y/n\]|yes, and don.t ask again|permission|approve|esc to cancel}"
+  ! printf '%s' "$cap" | grep -qiE "${FM_HC_PROMPT_RE:-do you want to|allow .*\?|\(y/n\)|\[y/n\]|yes, and don.t ask again|permission to|esc to cancel}"
 }
 
 # fm_backend_hc_send_text_submit: one `hc send --wait`, which pastes, presses
