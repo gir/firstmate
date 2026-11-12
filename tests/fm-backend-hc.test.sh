@@ -489,6 +489,7 @@ test_secondmate_spawn_lands_in_the_mates_own_space() {
   done
   assert_not_contains "$(cat "$D/log")" HC_SESSION=default "the spawn must never reach the default session"
   pass "hc: a --secondmate spawn keeps this home's identity and lands in the mate home's own space"
+}
 
 # Control cases exercise the real transaction and launch owner, not a mocked
 # fm-control. Only the terminal provider and its process-table view are fake.
