@@ -338,7 +338,8 @@ osc_plan() { # <task> <kind> <state> <busy|idle|unknown> [busy-mark]
   verb=$(status_line_verb "$line" 2>/dev/null) || verb=
   note=$(status_line_note "$line" 2>/dev/null) || note=
   note=$(printf '%s' "$note" | tr '\t\r\n' '   ')
-  if [ "$verb" = "$held" ]; then
+  # hc refuses input to a blocked terminal, so a captain-pending hold reports activity there.
+  if [ "$verb" = "$held" ] && [ "${WATCH_BACKEND:-}" != hc ]; then
     W_STATE=blocked
     W_KIND=question
     W_MSG="Needs your decision: $note"

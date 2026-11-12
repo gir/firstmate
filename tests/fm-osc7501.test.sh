@@ -1104,6 +1104,33 @@ t_captain_hold_stays_question_blocked() {
   pass "mapping: captain-held stays question-blocked until superseded"
 }
 
+# Contract: hc refuses input to a terminal whose native state is blocked, so a
+# captain-pending decision must never publish blocked there; the worker reports
+# its real activity instead. Other backends keep the question-blocked record.
+t_captain_hold_never_blocks_hc() {
+  local d=$TMP_ROOT/captainholdhc act wpid expected
+  mkhome "$d"
+  for act in idle busy; do
+    : >"$d/cap"
+    busy_rec "$d/state" t27 "$act"
+    printf 'needs-decision [key=choice]: choose\ncaptain-held [key=choice]: captain will decide\n' >"$d/state/t27.status"
+    expected=idle
+    [ "$act" != busy ] || expected=working
+    env "${CLEAN_UNSET[@]}" FM_OSC7501_TTY="$d/cap" FM_OSC7501_INTERVAL=1 \
+      bash "$SCRIPT" watch --task t27 --kind ship --state "$d/state" --harness opencode \
+      --backend hc --parent "$$" &
+    wpid=$!
+    if ! wait_cap "state=$expected:app=firstmate-opencode" "$d/cap" 100; then
+      kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null || true
+      fail "hc captain hold: $act activity did not report $expected"
+    fi
+    sleep 2
+    kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null || true
+    ! grep -q 'state=blocked' "$d/cap" || fail "hc captain hold: $act activity published blocked"
+  done
+  pass "mapping: a captain-held decision never publishes blocked on hc"
+}
+
 # A paused worker reports from its busy state like any other worker.
 t_paused_reads_from_busy_state() {
   local d=$TMP_ROOT/paused
@@ -1210,5 +1237,6 @@ fm_test_run \
   t_turn_then_terminal_line \
   t_paused_reads_from_busy_state \
   t_captain_hold_stays_question_blocked \
+  t_captain_hold_never_blocks_hc \
   t_retire_waits_for_slow_reporter \
   t_hc_terminal_with_inherited_herdr_markers
