@@ -241,7 +241,12 @@ repair_line() {
       fi
       ;;
     opencode)
-      printf '%s%s\n' "$prefix" 'repair missing watcher supervision by letting the OpenCode TUI plugin arm after idle; use bin/fm-watch-arm.sh only as a manual recovery probe if the plugin reports failure.'
+      lock_pid=$(tr -d '[:space:]' < "$FM_HOME/state/.lock" 2>/dev/null || true)
+      if [ -n "$lock_pid" ] && [ "$lock_pid" != 1 ] && [ -z "${lock_pid//[0-9]/}" ] && ! kill -0 "$lock_pid" 2>/dev/null && ! ps -p "$lock_pid" >/dev/null 2>&1; then
+        printf '%s%s%s%s\n' "$prefix" 'the session lock is stale (state/.lock names dead pid ' "$lock_pid" '), so the OpenCode plugin will not arm; reclaim it with FM_HOME=<home> bin/fm-lock.sh before ending the turn.'
+      else
+        printf '%s%s\n' "$prefix" 'repair missing watcher supervision by letting the OpenCode TUI plugin arm after idle; use bin/fm-watch-arm.sh only as a manual recovery probe if the plugin reports failure.'
+      fi
       ;;
     grok)
       printf '%s%s%s%s\n' "$prefix" 'repair missing watcher supervision with ' "$grok_arm" ' as its own Grok tracked background task, never shell &.'

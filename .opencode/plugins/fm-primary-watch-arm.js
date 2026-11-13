@@ -200,6 +200,38 @@ function supervisionNeeded(paths) {
   return result.status === 0;
 }
 
+// The lock's recorded owner pid when that process no longer exists; detection
+// only, bin/fm-lock.sh alone reclaims a stale lock.
+function staleLockPid(paths) {
+  let lockPid = "";
+  try {
+    lockPid = readFileSync(`${paths.state}/.lock`, "utf8").trim();
+  } catch {
+    return "";
+  }
+  if (!/^[0-9]+$/.test(lockPid) || lockPid === "1") return "";
+  try {
+    process.kill(Number(lockPid), 0);
+    return "";
+  } catch (error) {
+    return error?.code === "ESRCH" ? lockPid : "";
+  }
+}
+
+const reportedStaleLock = new Set();
+
+function reportStaleLock(paths, client, sessionID, lockPid) {
+  const key = `${paths.root}\0${paths.home}\0${lockPid}`;
+  if (reportedStaleLock.has(key)) return;
+  reportedStaleLock.add(key);
+  surfaceFailure(
+    paths,
+    client,
+    sessionID,
+    `watcher: FAILED - not arming: state/.lock is stale (owner pid ${lockPid} is dead), so this session is read-only and unsupervised. Reclaim it with FM_HOME=${paths.home} bin/fm-lock.sh`,
+  );
+}
+
 async function sessionOwnsLock(paths) {
   let lockPid = "";
   try {
@@ -590,6 +622,8 @@ async function beginArm(paths, sessionID, client, predecessorArmPid) {
   }
   if (!(await sessionOwnsLock(paths))) {
     reportReadOnly(paths);
+    const lockPid = staleLockPid(paths);
+    if (lockPid) reportStaleLock(paths, client, sessionID, lockPid);
     return { status: "read-only", armChild: null };
   }
   if (child) return { status: "existing", armChild: child };
