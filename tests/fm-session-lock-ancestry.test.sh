@@ -868,6 +868,40 @@ test_cygwin_ps_without_o_still_resolves_a_local_harness() {
   pass "session-lock: a harness in the local process table resolves untagged when ps has no -o option"
 }
 
+test_opencode_pty_helper_is_never_the_harness() {
+  local dir fakebin got
+  dir="$TMP_ROOT/opencode-pty"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$pid:$field" in
+  900:comm=) printf '%s\n' '/opt/oc/node_modules/@opencode/cli/bin/opencode.exe' ;;
+  900:args=) printf '%s\n' '/opt/oc/node_modules/@opencode/cli/bin/opencode.exe serve' ;;
+  900:ppid=) printf '%s\n' 1 ;;
+  910:comm=) printf '%s\n' '/home/u/.cache/opencode/bin/opencode-pty/0.5.2/opencode-pty' ;;
+  910:args=) printf '%s\n' '/home/u/.cache/opencode/bin/opencode-pty/0.5.2/opencode-pty daemon' ;;
+  910:ppid=) printf '%s\n' 900 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' 'bash /repo/bin/fm-watch-arm.sh' ;;
+  *:ppid=) printf '%s\n' 910 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  got=$(lib_eval "$fakebin" 'fm_harness_ancestry_pid') || fail "serve > opencode-pty > shell tree resolved no harness"
+  [ "$got" = 900 ] || fail "the opencode-pty helper was recorded as the harness: got '$got', expected the serve pid 900"
+  pass "session-lock: opencode-pty helper is skipped and its serve parent is the harness"
+}
+
 # --- end-to-end layer: the real Stop auto-arm in real process trees ----------
 
 install_autoarm_scripts() {
@@ -1676,6 +1710,7 @@ test_windows_clear_rekeys_the_lock_under_the_same_pid
 test_tagged_lock_is_inert_off_windows
 test_windows_task_lease_follows_a_tagged_lock_holder
 test_cygwin_ps_without_o_still_resolves_a_local_harness
+test_opencode_pty_helper_is_never_the_harness
 test_e2e_version_named_session_claims_the_home
 test_e2e_daemon_parented_session_claims_the_home
 test_e2e_daemon_parented_version_named_session_keeps_its_lock

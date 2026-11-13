@@ -163,6 +163,15 @@ function reportNotPrimary(paths) {
   console.error(`fm-primary-watch-arm: not-primary, not arming: root=${paths.root || "(none)"} home=${paths.home || "(none)"}`);
 }
 
+const reportedReadOnly = new Set();
+
+function reportReadOnly(paths) {
+  const key = `${paths.root}\0${paths.home}`;
+  if (reportedReadOnly.has(key)) return;
+  reportedReadOnly.add(key);
+  console.error(`fm-primary-watch-arm: read-only, not arming: this session does not own state/.lock root=${paths.root || "(none)"} home=${paths.home || "(none)"}`);
+}
+
 // bin/fm-supervision-lib.sh's fm_supervision_needed is the single owner of the
 // arm condition set (the turn-end guard decides with the same shared
 // predicate), so this plugin can never disagree with the guard again. Away
@@ -579,7 +588,10 @@ async function beginArm(paths, sessionID, client, predecessorArmPid) {
     reportNotPrimary(paths);
     return { status: "not-primary", armChild: null };
   }
-  if (!(await sessionOwnsLock(paths))) return { status: "read-only", armChild: null };
+  if (!(await sessionOwnsLock(paths))) {
+    reportReadOnly(paths);
+    return { status: "read-only", armChild: null };
+  }
   if (child) return { status: "existing", armChild: child };
   if (retryTimer) return { status: "retrying", armChild: null };
   if (!shouldArm(paths)) return { status: "not-needed", armChild: null };

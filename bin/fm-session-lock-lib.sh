@@ -115,6 +115,11 @@ fm_harness_process_matches() {  # <comm> <args>
   local comm=$1 args=$2 base argv0 name
   FM_HARNESS_IS_CLAUDE=0
   base=$(basename -- "$comm")
+  # OpenCode's shell tool runs in an opencode-pty helper that is a child of the
+  # opencode process hosting the plugins. It is never the session, and its
+  # install path carries an opencode component, so it is excluded before any
+  # name or path evidence can claim it.
+  [ "$base" != opencode-pty ] || return 1
   if printf '%s' "$base" | grep -qE "$FM_HARNESS_RE"; then
     case "$base" in *claude*) FM_HARNESS_IS_CLAUDE=1 ;; esac
     return 0
